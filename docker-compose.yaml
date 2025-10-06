@@ -1,0 +1,51 @@
+networks:
+  traefik:
+    external: false
+
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:12
+    container_name: forgejo
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+    restart: always
+    networks:
+      - forgejo
+    volumes:
+      - ./forgejo:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - 3000:3000
+      - 22:22
+    environment:
+      - FORGEJO__service__DISABLE_REGISTRATION: true
+      - FORGEJO__mailer__ENABLED: true
+      - FORGEJO__mailer__PROTOCOL: smtp
+      - FORGEJO__mailer__ADDR: smtp.zeptomail.com
+      - FORGEJO__mailer__PORT: 465
+      - FORGEJO__mailer__USER: emailapikey
+      - FORGEJO__mailer__PASSWD: ${ZEPTOMAIL_API_KEY}
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=forgejo
+      - traefik.http.services.forgejo.loadbalancer.server.port=3000
+
+      # HTTP
+      - traefik.http.routers.forgejo-http.rule=Host(`git.leohilsheimer.com`)
+      - traefik.http.routers.forgejo-http.entrypoints=web
+      - traefik.http.routers.forgejo-http.middlewares=to-https
+
+      # HTTPS
+      - traefik.http.routers.forgejo-https.entrypoints=websecure
+      - traefik.http.routers.forgejo-https.rule=Host(`git.leohilsheimer.com`)
+      - traefik.http.routers.forgejo-https.tls=true
+      - traefik.http.routers.forgejo-https.tls.certresolver=letsencrypt
+      - traefik.http.routers.forgejo-https.service=forgejo
+
+      # SSH
+      - traefik.tcp.routers.forgejo-ssh.entrypoints=ssh
+      - traefik.tcp.routers.forgejo-ssh.rule=HostSNI(`*`)
+      - traefik.tcp.routers.forgejo-ssh.service=forgejo-ssh-service
+      - traefik.tcp.services.forgejo-ssh-service.loadbalancer.server.port=22
