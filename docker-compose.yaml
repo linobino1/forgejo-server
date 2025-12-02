@@ -1,16 +1,18 @@
 networks:
   traefik:
-    external: false
+    external: true
+  forgejo:
+    driver: bridge
+  dind:
+    driver: bridge
 
 services:
   forgejo:
     image: codeberg.org/forgejo/forgejo:12
     container_name: forgejo
-    environment:
-      - USER_UID=1000
-      - USER_GID=1000
     restart: always
     networks:
+      - traefik
       - forgejo
     volumes:
       - ./forgejo:/data
@@ -20,16 +22,20 @@ services:
       - 3000:3000
       - 22:22
     environment:
-      - FORGEJO__service__DISABLE_REGISTRATION: true
-      - FORGEJO__mailer__ENABLED: true
-      - FORGEJO__mailer__PROTOCOL: smtp
-      - FORGEJO__mailer__ADDR: smtp.zeptomail.com
-      - FORGEJO__mailer__PORT: 465
-      - FORGEJO__mailer__USER: emailapikey
-      - FORGEJO__mailer__PASSWD: ${ZEPTOMAIL_API_KEY}
+      USER_UID: 1000
+      USER_GID: 1000
+      FORGEJO__service__DISABLE_REGISTRATION: true
+      FORGEJO__mailer__ENABLED: true
+      FORGEJO__mailer__PROTOCOL: smtp
+      FORGEJO__mailer__FROM: "Forgejo <forgejo@leohilsheimer.com>"
+      FORGEJO__mailer__SMTP_ADDR: smtp.zeptomail.com
+      FORGEJO__mailer__SMTP_PORT: 465
+      FORGEJO__mailer__USER: emailapikey
+      FORGEJO__mailer__PASSWD: ${ZEPTOMAIL_API_KEY}
+      FORGEJO__actions__DEFAULT_ACTIONS_URL: github
     labels:
       - traefik.enable=true
-      - traefik.docker.network=forgejo
+      - traefik.docker.network=traefik
       - traefik.http.services.forgejo.loadbalancer.server.port=3000
 
       # HTTP
@@ -42,10 +48,42 @@ services:
       - traefik.http.routers.forgejo-https.rule=Host(`git.leohilsheimer.com`)
       - traefik.http.routers.forgejo-https.tls=true
       - traefik.http.routers.forgejo-https.tls.certresolver=letsencrypt
-      - traefik.http.routers.forgejo-https.service=forgejo
 
       # SSH
       - traefik.tcp.routers.forgejo-ssh.entrypoints=ssh
       - traefik.tcp.routers.forgejo-ssh.rule=HostSNI(`*`)
       - traefik.tcp.routers.forgejo-ssh.service=forgejo-ssh-service
       - traefik.tcp.services.forgejo-ssh-service.loadbalancer.server.port=22
+
+  # Forgejo Runner setup following the documentation on https://forgejo.org/docs/latest/admin/actions/runner-installation/#oci-image-installation
+  # For the initial setup, run only forgejo and add the runner later
+  dind:
+    image: docker:dind
+    container_name: dind
+    privileged: true
+    command: ["dockerd", "-H", "tcp://0.0.0.0:2375", "--tls=false"]
+    networks:
+      - dind
+      - forgejo
+    restart: unless-stopped
+
+  runner:
+    restart: unless-stopped
+    depends_on:
+      dind:
+        condition: service_started
+    links:
+      - dind
+    networks:
+      - forgejo
+      - dind
+    container_name: runner
+    image: code.forgejo.org/forgejo/runner:11
+    user: 1001:1001
+    # command: '/bin/sh -c "sleep infinity"'
+    command: '/bin/sh -c "sleep 5; forgejo-runner daemon"'
+    env_file: .env
+    environment:
+      DOCKER_HOST: tcp://dind:2375
+    volumes:
+      - ./runner-data:/data:rw
